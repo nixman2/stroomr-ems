@@ -107,39 +107,6 @@ Stop the stack when needed:
 docker-compose down
 ```
 
-### Backend development
-
-From [`backend/`](backend/):
-
-```bash
-npm install
-npm start
-```
-
-The backend currently exposes operational endpoints and provides the scaffold for ingestion, recommendations, and device adapter services. See [`backend/README.md`](backend/README.md).
-
-### Frontend development
-
-From [`frontend/`](frontend/):
-
-```bash
-npm install
-npm run dev
-```
-
-The frontend development server runs on port `3000` inside the app directory; in Docker it is mapped to host port `3001`. See [`frontend/README.md`](frontend/README.md).
-
-### Database migrations
-
-Schema initialization is driven by the SQL files in [`migrations/`](migrations/), which are mounted into the TimescaleDB container through [`docker-compose.yml`](docker-compose.yml). On a fresh database volume, these initialization scripts are applied automatically by the container entrypoint during first boot.
-
-Primary migration files:
-
-- [`migrations/V1__initial_schema.sql`](migrations/V1__initial_schema.sql)
-- [`migrations/V2__hypertables_and_compression.sql`](migrations/V2__hypertables_and_compression.sql)
-
-Implementation details and manual execution notes are documented in [`docs/SETUP.md`](docs/SETUP.md).
-
 ### Viewing logs
 
 Inspect service logs with:
