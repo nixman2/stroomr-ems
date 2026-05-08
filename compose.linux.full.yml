@@ -1,0 +1,148 @@
+# Full Linux stack: timescaledb, mosquitto, backend, collector, frontend.
+# All services use host networking.
+# Backend port: BACKEND_PORT default 3000.
+# Frontend port: FRONTEND_PORT default 3001.
+# Collector port: COLLECTOR_PORT default 4050.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: energy-platform-timescaledb
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env.linux
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-energy_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-energy_platform}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-energy_user} -d ${POSTGRES_DB:-energy_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *default-logging
+
+  collector:
+    image: d4zenl/stroomr-ems-collector:latest
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: energy-platform-collector
+    env_file:
+      - .env.linux      
+    network_mode: host      
+    environment:
+      COLLECTOR_PORT: ${COLLECTOR_PORT:-4050}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      MQTT_HOST: ${MQTT_HOST:-127.0.0.1}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASS: ${MQTT_PASS:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const p=process.env.COLLECTOR_PORT||'4050';fetch('http://127.0.0.1:'+p+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    logging: *default-logging
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: energy-platform-mqtt
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -p 1883 -t healthcheck -m ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  backend:
+    image: d4zenl/stroomr-ems-backend:latest
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: energy-platform-backend
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env.linux
+    volumes:
+      - ./migrations:/app/migrations:ro
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://energy_user:changeme@127.0.0.1:5432/energy_platform}
+      NODE_ENV: ${NODE_ENV:-development}
+      PORT: ${BACKEND_PORT:-3000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATA_RETENTION_RECOMMENDATION_STATE_DAYS: ${DATA_RETENTION_RECOMMENDATION_STATE_DAYS:-1}
+      DATA_RETENTION_AUDIT_LOG_DAYS: ${DATA_RETENTION_AUDIT_LOG_DAYS:-180}
+      DATA_RETENTION_BATCH_SIZE: ${DATA_RETENTION_BATCH_SIZE:-2000}
+      DATA_RETENTION_MAX_BATCHES_PER_RUN: ${DATA_RETENTION_MAX_BATCHES_PER_RUN:-100}
+      MQTT_HOST: ${MQTT_HOST:-127.0.0.1}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASS: ${MQTT_PASS:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const p=process.env.PORT||'3000';fetch('http://127.0.0.1:'+p+'/health').then((res)=>{if(!res.ok)process.exit(1);process.exit(0);}).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging: *default-logging
+
+  frontend:
+    image: d4zenl/stroomr-ems-frontend:latest
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:${BACKEND_PORT:-3000}}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-StroomR EMS}
+    container_name: energy-platform-frontend
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env.linux
+    environment:
+      # Host networking: no ports: mapping. Backend uses 3000; Next must use another port.
+      PORT: ${FRONTEND_PORT:-3001}
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const p=process.env.PORT||'3001';fetch('http://127.0.0.1:'+p).then((res)=>{if(!res.ok)process.exit(1);process.exit(0);}).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging: *default-logging
+
+volumes:
+  postgres_data:

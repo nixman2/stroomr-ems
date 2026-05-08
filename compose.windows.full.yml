@@ -1,0 +1,120 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    container_name: energy-platform-timescaledb
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    env_file:
+      - ./.env.windows
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-energy_user} -d ${POSTGRES_DB:-energy_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - energy_platform_network
+    logging: *default-logging
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: energy-platform-backend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./.env.windows
+    volumes:
+      - ./migrations:/app/migrations:ro
+    environment:
+      PORT: "3000"
+      DATA_RETENTION_RECOMMENDATION_STATE_DAYS: ${DATA_RETENTION_RECOMMENDATION_STATE_DAYS:-1}
+      DATA_RETENTION_AUDIT_LOG_DAYS: ${DATA_RETENTION_AUDIT_LOG_DAYS:-180}
+      DATA_RETENTION_BATCH_SIZE: ${DATA_RETENTION_BATCH_SIZE:-2000}
+      DATA_RETENTION_MAX_BATCHES_PER_RUN: ${DATA_RETENTION_MAX_BATCHES_PER_RUN:-100}
+      MQTT_HOST: ${MQTT_HOST:-mosquitto}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASS: ${MQTT_PASS:-}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/health').then((res) => { if (!res.ok) process.exit(1); process.exit(0); }).catch(() => process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - energy_platform_network
+    logging: *default-logging
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: energy-platform-mqtt
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    ports:
+      - "1883:1883"
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -p 1883 -t healthcheck -m ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - energy_platform_network      
+    logging: *default-logging    
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://127.0.0.1:3000}
+        NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-StroomR EMS}
+    container_name: energy-platform-frontend
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    env_file:
+      - ./.env.windows
+    environment:
+      # Must match ports "3001:3000" — .env.windows sets PORT=3001 for other services.
+      PORT: 3000
+      NODE_ENV: production
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000').then((res) => { if (!res.ok) process.exit(1); process.exit(0); }).catch(() => process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - energy_platform_network
+    logging: *default-logging
+
+networks:
+  energy_platform_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
